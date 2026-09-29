@@ -21,8 +21,8 @@ const PlaneDonor = (function () {
   // "拉长的 A320"（机身直径放大但机头/驾驶舱窗/舱门仍是单通道布局），失真肉眼可辨。
   // 两个供体的世界轴序一致（均为 X=机身长(机头+X)、Y=高、Z=展向，见 tools/axis_probe.py），
   // 故走完全相同的归一化与变形路径。
-  const DONOR_URL = '/static/models/A320_nologo.glb';
-  const DONOR_URL_WIDE = '/static/models/A350_nologo.glb';
+  const DONOR_URL = './static/models/A320_nologo.glb';
+  const DONOR_URL_WIDE = './static/models/A350_nologo.glb';
 
   let donor = null;            // 默认供体（A320）
   let donorWide = null;        // 宽体供体（A350）；载入失败则退回默认供体
