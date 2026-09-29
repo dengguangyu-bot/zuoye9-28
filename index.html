@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>翼生 WingBorn · 概念设计工坊</title>
+<link rel="stylesheet" href="./static/css/style.css">
+</head>
+<body>
+<div id="app" v-cloak>
+
+  <!-- ══════════════ 顶栏 ══════════════ -->
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">✈</span>
+      <span class="brand-name">翼生 <em>WingBorn</em></span>
+      <span class="brand-slogan">输入需求，翼由此生</span>
+    </div>
+    <nav class="tabs">
+      <button v-for="t in tabs" :key="t.key" class="tab"
+              :class="{active: tab === t.key}" @click="tab = t.key">{{ t.label }}</button>
+    </nav>
+    <div class="status-chip" :class="{busy: state === 'running'}">
+      <i></i>{{ state === 'running' ? '计算中' : '本地运行' }}
+    </div>
+  </header>
+
+  <!-- ══════════════ 工作台 ══════════════ -->
+  <main class="workbench" v-show="tab === 'bench'">
+
+    <!-- ── 左：需求输入 ── -->
+    <aside class="panel panel-left">
+      <h2 class="panel-title">任务需求</h2>
+
+      <div class="field">
+        <label>旅客数 <b class="mono">{{ mission.pax }}</b> <small>人</small></label>
+        <input type="range" min="30" max="900" step="1" v-model.number="mission.pax"
+               @input="onSlider">
+        <div class="field-hint"><span>30</span><span>900</span></div>
+      </div>
+
+      <div class="field">
+        <label>航程 <b class="mono">{{ mission.range_km }}</b> <small>km</small></label>
+        <input type="range" min="500" max="16000" step="50" v-model.number="mission.range_km"
+               @input="onSlider">
+        <div class="field-hint"><span>500</span><span>16 000</span></div>
+      </div>
+
+      <div class="field">
+        <label>巡航马赫 <b class="mono">M{{ mission.mach.toFixed(2) }}</b></label>
+        <input type="range" min="0.40" max="0.95" step="0.01" v-model.number="mission.mach"
+               @input="onSlider">
+        <div class="field-hint"><span>0.40</span><span>0.95</span></div>
+      </div>
+
+      <div class="presets">
+        <span class="presets-label">快速预设</span>
+        <button v-for="p in presets" :key="p.label" class="chip"
+                @click="applyPreset(p)">{{ p.label }}</button>
+      </div>
+
+      <button class="btn-primary" :disabled="state === 'running'" @click="runDesign">
+        <span v-if="state === 'running'">设计中…</span>
+        <span v-else>▶ 开始总体设计</span>
+      </button>
+
+      <p class="error-bar" v-if="error">{{ error }}</p>
+
+      <div class="engine-note" v-if="result">
+        <div class="note-row"><span>座级</span><b>{{ result.class_label }}</b></div>
+        <div class="note-row"><span>巡航升阻比</span><b class="mono">{{ result.factors.ld }}</b></div>
+        <div class="note-row"><span>等效航程</span><b class="mono">{{ result.factors.r_eff_km }} km</b></div>
+        <div class="note-row"><span>翼载</span><b class="mono">{{ result.geometry.wing.loading_kg_m2 }} kg/m²</b></div>
+        <div class="note-row"><span>推重比</span><b class="mono">{{ result.factors.tw }}</b></div>
+      </div>
+    </aside>
+
+    <!-- ── 中：3D + 收敛曲线 ── -->
+    <section class="stage">
+      <div class="viewport">
+        <canvas ref="canvas" id="gl"></canvas>
+        <div class="viewport-badge" v-if="result">{{ result.mission.pax }} 座 · {{ result.mission.range_km }} km · M{{ result.mission.mach.toFixed(2) }}</div>
+        <div class="viewport-hint" v-if="state === 'empty'">
+          <p class="hint-big">输入你的航线需求</p>
+          <p class="hint-sub">左侧拖动滑杆，点击「开始总体设计」</p>
+        </div>
+        <div class="viewport-status" v-if="statusText">
+          <span class="pulse" :class="state"></span>{{ statusText }}
+        </div>
+        <div class="viewport-tools">
+          <button @click="resetView" title="复位视角">⟲</button>
+          <button @click="toggleSpin" :class="{on: spinning}" title="自动旋转">↻</button>
+          <button @click="toggleLabels" :class="{on: labelsOn}" title="尺寸标注（翼展 / 机身长 / 发动机）">⇔</button>
+        </div>
+      </div>
+
+      <div class="chart-strip">
+        <div class="strip-head">
+          <span>重量迭代收敛</span>
+          <span class="mono dim" v-if="result">第 {{ result.iterations }} 次迭代收敛</span>
+        </div>
+        <div ref="convChart" class="conv-chart"></div>
+      </div>
+    </section>
+
+    <!-- ── 右：方案卡片 ── -->
+    <aside class="panel panel-right">
+      <h2 class="panel-title">总体方案</h2>
+
+      <div class="card-group" v-for="(grp, gi) in cardGroups" :key="grp.key"
+           :class="{lit: litGroups.includes(grp.key)}">
+        <div class="group-head">
+          <span class="dot"></span>{{ grp.title }}
+        </div>
+        <div class="kv" v-for="row in grp.rows" :key="row.label">
+          <span class="k">{{ row.label }}</span>
+          <span class="v mono" :class="{accent: row.accent}">{{ row.value }}</span>
+        </div>
+      </div>
+
+      <div class="card-empty" v-if="!result">
+        <p>尚未生成方案</p>
+        <p class="dim">设计完成后此处点亮四组参数</p>
+      </div>
+
+      <div class="card-actions" v-if="result">
+        <button class="btn-accent" :class="{breath: state === 'done'}" @click="openCompare">
+          与真机对比
+        </button>
+        <button class="btn-ghost" @click="openSave">存入机库</button>
+        <button class="btn-ghost" @click="exportReport">导出报告</button>
+      </div>
+    </aside>
+  </main>
+
+  <!-- ══════════════ 机库 ══════════════ -->
+  <main class="hangar" v-show="tab === 'hangar'">
+    <div class="hangar-head">
+      <h2>机库 <small class="dim">{{ designs.length }} 个方案</small></h2>
+      <button class="btn-ghost" @click="loadDesigns">刷新</button>
+    </div>
+    <div class="hangar-empty" v-if="!designs.length">
+      <p>机库还空着</p>
+      <p class="dim">在工作台完成设计后点击「存入机库」</p>
+    </div>
+    <div class="hangar-wall">
+      <article class="hangar-card" v-for="d in designs" :key="d.id"
+               :style="{ borderColor: d.livery.hex + '66' }">
+        <img v-if="d.thumb" class="hc-thumb" :src="d.thumb" alt="俯视剪影">
+        <div class="hc-top">
+          <h3>{{ d.name }}</h3>
+          <span class="hc-author">{{ d.author }}</span>
+        </div>
+        <div class="hc-params">
+          <div><span>旅客</span><b class="mono">{{ d.mission.pax }}</b></div>
+          <div><span>航程</span><b class="mono">{{ d.mission.range_km }}</b></div>
+          <div><span>马赫</span><b class="mono">{{ d.mission.mach.toFixed(2) }}</b></div>
+        </div>
+        <div class="hc-foot">
+          <button class="link" @click="recall(d)">回看方案</button>
+          <button class="link danger" @click="askDelete(d)">删除</button>
+        </div>
+      </article>
+    </div>
+  </main>
+
+  <!-- ══════════════ 机型库 ══════════════ -->
+  <main class="fleet" v-show="tab === 'fleet'">
+    <div class="fleet-head">
+      <h2>机型库 <small class="dim">{{ fleet.length }} 架双发涡扇客机 · 回代检验基准</small></h2>
+      <div class="fleet-filter">
+        <button v-for="f in fleetFilters" :key="f.key" class="chip"
+                :class="{on: fleetClass === f.key}" @click="fleetClass = f.key">{{ f.label }}</button>
+      </div>
+    </div>
+    <div class="fleet-body">
+      <table class="fleet-table">
+        <thead>
+          <tr><th>机型</th><th>级别</th><th>旅客</th><th>航程 km</th><th>MTOW kg</th>
+              <th>OEW kg</th><th>S m²</th><th>翼展 m</th><th>机长 m</th><th>推力 kN</th></tr>
+        </thead>
+        <tbody>
+          <tr v-for="a in filteredFleet" :key="a.name"
+              :class="{picked: picked && picked.name === a.name}" @click="picked = a">
+            <td class="name">{{ a.name }}</td>
+            <td><span class="cls-tag" :class="a.class">{{ clsLabel(a.class) }}</span></td>
+            <td class="mono">{{ a.pax }}</td>
+            <td class="mono">{{ a.range_km }}</td>
+            <td class="mono">{{ fmt(a.mtow_kg) }}</td>
+            <td class="mono dim">{{ fmt(a.oew_kg) }}</td>
+            <td class="mono">{{ a.wing_area_m2 }}</td>
+            <td class="mono">{{ a.span_m }}</td>
+            <td class="mono">{{ a.length_m }}</td>
+            <td class="mono">{{ a.thrust_kn }}</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="fleet-scatter" ref="fleetChart"></div>
+    </div>
+  </main>
+
+  <!-- ══════════════ 对比散点（弹出层） ══════════════ -->
+  <div class="modal" v-if="showCompare" @click.self="showCompare = false">
+    <div class="modal-box wide">
+      <div class="modal-head">
+        <h3>我的设计在真机群中的位置</h3>
+        <button class="close" @click="showCompare = false">✕</button>
+      </div>
+      <div class="modal-nearest" v-if="result">
+        <span class="badge">最近邻</span>
+        <b>{{ result.benchmarks.nearest }}</b>
+        <span class="dim">MTOW 偏差</span>
+        <b class="mono" :class="devClass(result.benchmarks.nearest_dev)">{{ result.benchmarks.nearest_dev }}</b>
+        <span class="dim">· 我的设计 <b class="mono accent">{{ fmt(result.weights.mtow_kg) }} kg</b></span>
+      </div>
+      <div class="near-list" v-if="result">
+        <div class="near-row" v-for="b in result.benchmarks.top" :key="b.name">
+          <span class="near-name">{{ b.name }}</span>
+          <span class="cls-tag" :class="b.class">{{ clsLabel(b.class) }}</span>
+          <span class="dim mono">{{ b.pax }} 座 · {{ fmt(b.range_km) }} km · {{ fmt(b.mtow_kg) }} kg</span>
+          <span class="mono near-dev" :class="devClass(b.mtow_dev_str)">{{ b.mtow_dev_str }}</span>
+        </div>
+      </div>
+      <div ref="cmpChart" class="cmp-chart"></div>
+      <p class="modal-foot dim">横轴 MTOW · 纵轴翼展（双对数）· 天青实心为我的设计，空心为 14 架真机</p>
+    </div>
+  </div>
+
+  <!-- ══════════════ 保存对话框 ══════════════ -->
+  <div class="modal" v-if="showSave" @click.self="showSave = false">
+    <div class="modal-box">
+      <div class="modal-head"><h3>存入机库</h3><button class="close" @click="showSave = false">✕</button></div>
+      <label class="dlg-field">设计名称
+        <input v-model="saveForm.name" placeholder="例如：长三角干线方案" maxlength="40">
+      </label>
+      <label class="dlg-field">设计者
+        <input v-model="saveForm.author" placeholder="匿名总师" maxlength="20">
+      </label>
+      <div class="dlg-field">涂装主色
+        <div class="livery-row">
+          <input type="color" v-model="liveryHex" @input="onLiveryChange">
+          <span class="mono dim">{{ liveryHex }}</span>
+          <span class="dim">改动即时预览；机库缩略图按此色渲染</span>
+        </div>
+      </div>
+      <div class="dlg-actions">
+        <button class="btn-ghost" @click="showSave = false">取消</button>
+        <button class="btn-primary" @click="doSave">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════ 删除确认 ══════════════ -->
+  <div class="modal" v-if="pendingDelete" @click.self="pendingDelete = null">
+    <div class="modal-box">
+      <div class="modal-head"><h3>删除设计</h3><button class="close" @click="pendingDelete = null">✕</button></div>
+      <p class="dlg-text">确定删除「{{ pendingDelete && pendingDelete.name }}」？该操作不可撤销。</p>
+      <div class="dlg-actions">
+        <button class="btn-ghost" @click="pendingDelete = null">取消</button>
+        <button class="btn-danger" @click="doDelete">删除</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" v-if="toast">{{ toast }}</div>
+</div>
+
+<script src="./static/vendor/vue.global.prod.js"></script>
+<script src="./static/vendor/three.min.js"></script>
+<script src="./static/vendor/OrbitControls.js"></script>
+<script src="./static/vendor/GLTFLoader.js"></script>
+<script src="./static/vendor/CSS2DRenderer.js"></script>
+<script src="./static/vendor/echarts.min.js"></script>
+<script src="./static/js/plane-stage.js"></script>
+<script src="./static/js/plane-donor.js"></script>
+<script src="./static/js/three-plane.js"></script>
+<script src="./static/js/charts.js"></script>
+<script src="./static/js/static-api.js"></script>
+<script src="./static/js/app.js"></script>
+</body>
+</html>
+
