@@ -273,11 +273,11 @@ const PlaneStage = (function () {
   }
 
   // tPos：数值沿尺寸线的位置（0=起点 1=终点）；labelOffset：再叠加的三维偏移，
-  // 两者合起来把文字推离机体，避免压在机身/机翼上或彼此重叠。
-  function dimensionAt(from, to, text, tickAxis, tPos, labelOffset) {
+  // 两者合起来把文字推离机体，避免压在机身/机翼上或彼此重叠。tick：端点刻度半长。
+  function dimensionAt(from, to, text, tickAxis, tPos, labelOffset, tick) {
     const g = new THREE.Group();
     g.add(dimLine([from, to]));
-    const t = 0.6;
+    const t = tick || 0.6;
     [from, to].forEach(function (p) {
       const q = p.slice();
       const ax = tickAxis || 'y';
@@ -298,36 +298,61 @@ const PlaneStage = (function () {
   }
 
   /**
-   * 尺寸标注组：翼展 / 机身长 / 发动机直径（数值直接取自引擎输出）
-   * geo 为 engine.design() 的 geometry 子字典
+   * 参数化机体（Track B 放样 / 无供体时）的标注锚点：机体居中于原点、机头 +Z。
+   * Track A 底模手术机体**不居中**（机头固定、尾部后退），须用 PlaneDonor.anchors。
    */
-  function dimensions(geo) {
+  function centeredAnchors(geo) {
+    const L = geo.fuselage.length, D = geo.fuselage.dia, span = geo.wing.span;
+    const zRoot = L / 2 - (geo.wing.root_le_x_frac || 0.42) * L - geo.wing.root_chord * 0.5;
+    const yEng = geo.wing.root_z - geo.engines.dia * 0.30;
+    return {
+      nose: [0, 0, L / 2], tail: [0, 0, -L / 2], axisY: 0, fusR: D / 2,
+      tip: [span / 2, geo.wing.root_z, zRoot],
+      eng: [geo.engines.y_frac * span / 2, yEng, zRoot + geo.wing.root_chord * 0.5],
+      engR: geo.engines.dia / 2
+    };
+  }
+
+  /**
+   * 尺寸标注组：翼展 / 机身长 / 发动机直径（数值直接取自引擎输出）
+   * geo 为 engine.design() 的 geometry 子字典；anc 为显示系锚点
+   * （Track A 传 PlaneDonor.anchors(geo, cls)；缺省按居中参数化机体推算）。
+   * 注意：只放大刻度/偏移等"标注自身尺寸"，**不缩放组**——整组 scale 会把端点
+   * 位置一起放大，巨机上尺寸线会比飞机长一倍多。
+   */
+  function dimensions(geo, anc) {
+    const a = anc || centeredAnchors(geo);
     const g = new THREE.Group();
     g.name = 'dimensions';
-    const L = geo.fuselage.length, D = geo.fuselage.dia;
-    const span = geo.wing.span;
-    const dEng = geo.engines.dia;
-    const yTop = D * 0.75;
-    // 翼展：机翼正下方一条横线；数值下移，避开机身
-    const ySpan = geo.wing.root_z - D * 0.55;
-    const zSpan = L / 2 - (geo.wing.root_le_x_frac || 0.42) * L - geo.wing.root_chord * 0.5;
-    g.add(dimension([-span / 2, ySpan, zSpan], [span / 2, ySpan, zSpan],
-                    '翼展 ' + span.toFixed(1) + ' m', 'y', [0, -0.030 * L, 0]));
-    // 机身长：机身右侧一条纵线；数值挂在机头端，避免与翼展标注挤在中段
-    const xLen = D * 0.95;
-    g.add(dimensionAt([xLen, 0, -L / 2], [xLen, 0, L / 2],
+    const L = geo.fuselage.length, span = geo.wing.span, dEng = geo.engines.dia;
+    const sc = Math.max(1, L / 40);          // 巨机上刻度不该还是 0.6 m
+    const tick = 0.6 * sc;
+    const yBelly = a.axisY - a.fusR;
+
+    // 翼展：机腹下方一条横线，两端从翼尖拉竖直引出线下来
+    const ySpan = yBelly - 0.9 * sc;
+    const xt = Math.abs(a.tip[0]), zt = a.tip[2];
+    const span_ = dimensionAt([-xt, ySpan, zt], [xt, ySpan, zt],
+                              // 数值挂近机位(+X)翼外段：中点在机腹下会与机身长/发动机标注挤在一起；
+                              // 挂左翼(-X)则斜视时落在远侧机身/翼根上看不清
+                              '翼展 ' + span.toFixed(1) + ' m', 'y', 0.80,
+                              [0, -0.030 * L, 0], tick);
+    span_.add(dimLine([[-xt, a.tip[1], zt], [-xt, ySpan - tick, zt]]));
+    span_.add(dimLine([[xt, a.tip[1], zt], [xt, ySpan - tick, zt]]));
+    g.add(span_);
+
+    // 机身长：机身右侧一条纵线，端点对齐机尾/机头；数值挂在前段，避开翼展标注
+    const xLen = a.fusR * 1.9;
+    g.add(dimensionAt([xLen, a.axisY, a.tail[2]], [xLen, a.axisY, a.nose[2]],
                       '机身长 ' + L.toFixed(1) + ' m', 'y', 0.26,
-                      [0.040 * L, 0.012 * L, 0]));
-    // 发动机直径：右侧短舱处一小段
-    const yEng = geo.wing.root_z - dEng * 0.30;
-    const xEng = geo.engines.y_frac * span / 2;
-    const zEng = zSpan + (geo.wing.root_chord * 0.5);
-    // 发动机：标注推到短舱外侧下方，避开翼展线与机体
-    g.add(dimensionAt([xEng, yEng + dEng / 2, zEng], [xEng, yEng - dEng / 2, zEng],
-                      '发动机 Ø' + dEng.toFixed(2) + ' m', 'x', 0.5,
-                      [0, -0.040 * L, 0]));
-    // 标注用小尺寸也跟着缩放：巨机上字号不该还是 0.6 m
-    g.scale.setScalar(Math.max(1, L / 40));
+                      [0.040 * L, 0.012 * L, 0], tick));
+
+    // 发动机直径：紧贴右侧短舱外侧的一段竖线（在短舱之外，不被机体遮挡）
+    const xe = Math.abs(a.eng[0]) + a.engR + 0.3 * sc;
+    const eng_ = dimensionAt([xe, a.eng[1] + a.engR, a.eng[2]], [xe, a.eng[1] - a.engR, a.eng[2]],
+                             '发动机 Ø' + dEng.toFixed(2) + ' m', 'x', 0.5,
+                             [0, -0.040 * L, 0], tick * 0.6);
+    g.add(eng_);
     return g;
   }
 

@@ -103,10 +103,17 @@ const PlaneDonor = (function () {
       if (!cnt) break;
       yc = (a + b) / 2; R = (b - a) / 2;
     }
+    // 翼尖：展向最外 3% 的顶点平均位置（尺寸标注的引出线从这里拉出）
+    const halfSpan = (zh - zl) / 2;
+    let tx = 0, ty = 0, tn = 0;
+    for (let i = 0; i < p.length; i += 3) {
+      if (Math.abs(p[i + 2] - zc) > halfSpan * 0.97) { tx += p[i]; ty += p[i + 1]; tn++; }
+    }
     return {
       xNose: xh, xTail: xl, L: L, yc: yc, zc: zc, R: R,
       yMin: yl, yMax: yh, zMin: zl, zMax: zh,
-      halfSpan: (zh - zl) / 2,
+      halfSpan: halfSpan,
+      tipX: tn ? tx / tn : xl + L * 0.4, tipY: tn ? ty / tn : yc,
       // 短舱锚点：全局最低点即短舱底部
       xEng: lowX, zEng: lowZ, yEngBottom: lowY,
       nacR: R * 0.55
@@ -151,6 +158,29 @@ const PlaneDonor = (function () {
     return t * t * (3 - 2 * t);
   };
 
+  /* 变形的两个基础映射——deform 与 anchors 共用同一份公式，标注才能与网格严格对位 */
+
+  // ① 机身长：smoothstep 高原只作用于 25%–75% 段（客舱插段，A321 之于 A320 的做法）
+  function mapLen(m, dL, x) {
+    return x - dL * smoothstep(0.25, 0.75, (m.xNose - x) / m.L);
+  }
+
+  // ② 翼展：机身处不缩放，向 30% 半展平滑过渡到满缩比（防翼根撕裂）
+  function mapSpan(m, spanK, z) {
+    const w = smoothstep(0.04, 0.30, Math.abs(z - m.zc) / m.halfSpan);
+    return m.zc + (z - m.zc) * (1 + (spanK - 1) * w);
+  }
+
+  // 短舱锚点（供体系，取 +z 一侧）：原位 p0 → 经①②搬运后的位置 p1
+  function engineAnchor(m, dL, spanK) {
+    const y = m.yEngBottom + m.nacR;
+    return {
+      x0: m.xEng, z0: m.zEng, y: y,
+      x1: mapLen(m, dL, m.xEng),
+      z1: mapSpan(m, spanK, m.zEng)     // 供体镜像对称（zc≈0），与 ④ 的 |z| 约定一致
+    };
+  }
+
   /**
    * 按引擎参数重算全部顶点。geo 为 engine.design() 的 geometry 子字典。
    * grow 为生长动画参数（缺省 1 = 设计态）：
@@ -177,22 +207,15 @@ const PlaneDonor = (function () {
     const spanK = (spanTar / (m.halfSpan * 2)) * gSpan;
     const diaK = dTar / (m.R * 2);
     const engK = (geo.engines.dia / (m.nacR * 2)) * gEng;
-    const halfD = m.halfSpan;
     // 生长：设计态下机体从机头到机尾占 [xNose−Ltar, xNose]，绕其中心做长度缩放
     const growLen = 0.5 + 0.5 * gLen;
     const cx = m.xNose - Ltar / 2;
 
+    const ea = engineAnchor(m, dL, spanK);
+
     for (let i = 0; i < src.length; i += 3) {
-      let x = src[i], y = src[i + 1], z = src[i + 2];
-
-      // ① 机身长：smoothstep 高原只作用于 25%–75% 段（客舱插段，A321 之于 A320 的做法）
-      const sn = (m.xNose - x) / m.L;             // 0 机头 → 1 尾
-      x -= dL * smoothstep(0.25, 0.75, sn);
-
-      // ② 翼展：机身处不缩放，向 30% 半展平滑过渡到满缩比（防翼根撕裂）
-      const sf = Math.abs(z - m.zc) / halfD;
-      const wSpan = smoothstep(0.04, 0.30, sf);
-      z = m.zc + (z - m.zc) * (1 + (spanK - 1) * wSpan);
+      const sx = src[i], sy = src[i + 1], sz = src[i + 2];
+      let x = mapLen(m, dL, sx), y = sy, z = mapSpan(m, spanK, sz);
 
       // ③ 机身径：仅机身核心区径向缩放，向整流罩外平滑消失
       let dy = y - m.yc, dz = z - m.zc;
@@ -204,16 +227,20 @@ const PlaneDonor = (function () {
         z = m.zc + dz * k;
       }
 
-      // ④ 发动机：短舱簇内绕簇轴等比缩放
-      const dxE = x - m.xEng;
-      const dzE = Math.abs(z) - m.zEng;
-      const dE = Math.hypot(dxE, dzE * 0.9);
-      const wEng = smoothstep(m.nacR * 1.9, m.nacR * 1.0, dE);
+      // ④ 发动机：权重在**原始坐标**里判定（①②已把短舱搬走，用搬运后的坐标会
+      //    脱离权重场——250 座起短舱不再缩放、反而误伤锚点原位的机翼顶点）；
+      //    短舱体随锚点刚性平移后绕簇轴等比缩放，不再被②的展向拉伸压扁
+      const dxE = sx - ea.x0;
+      const dzE = Math.abs(sz) - ea.z0;
+      const wEng = smoothstep(m.nacR * 1.9, m.nacR * 1.0, Math.hypot(dxE, dzE * 0.9));
       if (wEng > 0) {
-        const k = 1 + (engK - 1) * wEng;
-        x = m.xEng + dxE * k;
-        y = m.yEngBottom + m.nacR + (y - (m.yEngBottom + m.nacR)) * k;
-        z = Math.sign(z) * (m.zEng + dzE * k);
+        const s = Math.sign(sz) || 1;
+        const xr = ea.x1 + dxE * engK;
+        const yr = ea.y + (sy - ea.y) * engK;
+        const zr = s * (ea.z1 + dzE * engK);
+        x += (xr - x) * wEng;
+        y += (yr - y) * wEng;
+        z += (zr - z) * wEng;
       }
 
       // ⑤ 生长缩放：绕设计态机体中心沿长轴收缩/展开
@@ -224,6 +251,32 @@ const PlaneDonor = (function () {
     d.geo.attributes.position.needsUpdate = true;
     d.geo.computeVertexNormals();
     return d.geo;
+  }
+
+  /**
+   * 尺寸标注锚点（**显示系**：展 X / 高 Y / 长 Z，机头 +Z），设计态（无生长）。
+   * 用与 deform 相同的映射解析推出，保证标注落在变形后的网格上，而不是按
+   * "机身居中于原点"的假设去猜——底模手术是机头固定、尾部后退，机体并不居中。
+   * 显示系 = 供体系绕 Y 轴 −90°：(x, y, z)供体 → (−z, y, x)显示。
+   */
+  function anchors(geo, cls) {
+    const d = donorFor(cls);
+    if (!d) return null;
+    const m = d.metrics;
+    const dL = geo.fuselage.length - m.L;
+    const spanK = geo.wing.span / (m.halfSpan * 2);
+    const ea = engineAnchor(m, dL, spanK);
+    return {
+      nose: [0, m.yc, m.xNose],
+      tail: [0, m.yc, mapLen(m, dL, m.xTail)],
+      axisY: m.yc,
+      fusR: geo.fuselage.dia / 2,
+      // 右翼尖（显示 +X）；左翼尖为其镜像
+      tip: [mapSpan(m, spanK, m.zc + m.halfSpan) - m.zc, m.tipY, mapLen(m, dL, m.tipX)],
+      // 右侧短舱中心（显示 +X）
+      eng: [ea.z1, ea.y, ea.x1],
+      engR: geo.engines.dia / 2
+    };
   }
 
   /* ───────────────────── 材质（§3A.3 tint）───────────────────── */
@@ -290,6 +343,7 @@ const PlaneDonor = (function () {
     DONOR_URL_WIDE: DONOR_URL_WIDE,
     load: load,
     deform: deform,          // 主应用生长动画直接调用（逐帧传生长参数）
+    anchors: anchors,        // 尺寸标注锚点（与 deform 同源公式）
     build: build,
     disposeTree: disposeTree,
     isLoaded: isLoaded,

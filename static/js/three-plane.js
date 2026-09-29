@@ -115,7 +115,8 @@ const PlaneView = (function () {
     stage.content.add(root);
 
     // §3A.4 计算标注（数值直接取引擎输出，随滑杆实时重算）
-    dimsGroup = PlaneStage.dimensions(geo);
+    // 锚点取自底模手术的同源映射——机体不居中，不能按参数公式猜位置
+    dimsGroup = PlaneStage.dimensions(geo, PlaneDonor.anchors(geo, result.class));
     dimsGroup.visible = labelsOn;
     stage.content.add(dimsGroup);
 
