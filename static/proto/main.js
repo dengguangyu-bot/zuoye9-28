@@ -70,7 +70,8 @@
                              : TrackB.build(geo, res.mission, liveryHex);
       if (!root) { fail('构建失败（' + variant + '）'); return; }
       st.content.add(root);
-      if (showDims) st.content.add(PlaneStage.dimensions(geo));
+      if (showDims) st.content.add(PlaneStage.dimensions(geo,
+        variant === 'a' ? PlaneDonor.anchors(geo, res.class) : null));
     };
 
     const finish = function () {
